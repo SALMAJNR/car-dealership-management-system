@@ -1,8 +1,17 @@
 <script setup>
-import { ref, onBeforeMount, computed } from "vue"
+import { ref, onBeforeMount, computed, watch } from "vue"
 import axios from "axios"
 import Cookies from "js-cookie"
 import { useUserStore } from "@/stores/user"
+
+import NotificationToast from "./dashboard/NotificationToast.vue"
+import DashboardStats from "./dashboard/DashboardStats.vue"
+import DashboardCharts from "./dashboard/DashboardCharts.vue"
+import SearchFilters from "./dashboard/SearchFilters.vue"
+import PaginationControls from "./dashboard/PaginationControls.vue"
+import CarCard from "./dashboard/CarCard.vue"
+import AddCarForm from "./dashboard/AddCarForm.vue"
+import EditCarModal from "./dashboard/EditCarModal.vue"
 
 const userStore = useUserStore()
 
@@ -10,6 +19,7 @@ const cars = ref([])
 const brands = ref([])
 const categories = ref([])
 const dealers = ref([])
+const stats = ref(null)
 
 const carToAdd = ref({
   model: "",
@@ -20,44 +30,122 @@ const carToAdd = ref({
 })
 
 const carToEdit = ref({})
-const carsPictureRef = ref()
-const carAddImageUrl = ref()
-const stats = ref(null)
+const carsPictureRef = ref(null)
+const carAddImageUrl = ref("")
 
 const modelFilter = ref("")
 const brandFilter = ref("")
 const categoryFilter = ref("")
 const dealerFilter = ref(0)
 
+const debouncedModelFilter = ref("")
+const debouncedBrandFilter = ref("")
+const debouncedCategoryFilter = ref("")
+
+const currentPage = ref(1)
+const itemsPerPage = ref(6)
+
+const notification = ref({
+  show: false,
+  message: "",
+  type: "success"
+})
+
+let debounceTimer = null
+
+watch(
+  [modelFilter, brandFilter, categoryFilter, dealerFilter],
+  () => {
+    clearTimeout(debounceTimer)
+
+    debounceTimer = setTimeout(() => {
+      debouncedModelFilter.value = modelFilter.value
+      debouncedBrandFilter.value = brandFilter.value
+      debouncedCategoryFilter.value = categoryFilter.value
+      currentPage.value = 1
+    }, 300)
+  }
+)
+
+function notify(message, type = "success") {
+  notification.value = {
+    show: true,
+    message,
+    type
+  }
+
+  setTimeout(() => {
+    notification.value.show = false
+  }, 3000)
+}
+
 const brandById = computed(() => {
   const result = {}
-  for (let b of brands.value) result[b.id] = b
+  for (const brand of brands.value) result[brand.id] = brand
   return result
 })
 
 const categoryById = computed(() => {
   const result = {}
-  for (let c of categories.value) result[c.id] = c
+  for (const category of categories.value) result[category.id] = category
   return result
 })
 
 const dealerById = computed(() => {
   const result = {}
-  for (let d of dealers.value) result[d.id] = d
+  for (const dealer of dealers.value) result[dealer.id] = dealer
   return result
 })
 
 const carsFiltered = computed(() => {
-  const modelCI = modelFilter.value.toLowerCase()
-  const brandCI = brandFilter.value.toLowerCase()
-  const categoryCI = categoryFilter.value.toLowerCase()
+  const modelCI = debouncedModelFilter.value.toLowerCase()
+  const brandCI = debouncedBrandFilter.value.toLowerCase()
+  const categoryCI = debouncedCategoryFilter.value.toLowerCase()
 
-  return cars.value.filter(item =>
-    (!modelFilter.value || item.model.toLowerCase().includes(modelCI)) &&
-    (!brandFilter.value || brandById.value[item.brand]?.name.toLowerCase().includes(brandCI)) &&
-    (!categoryFilter.value || categoryById.value[item.category]?.name.toLowerCase().includes(categoryCI)) &&
-    (!dealerFilter.value || item.dealer == dealerFilter.value)
+  return cars.value.filter(car =>
+    (!debouncedModelFilter.value ||
+      car.model?.toLowerCase().includes(modelCI)) &&
+
+    (!debouncedBrandFilter.value ||
+      brandById.value[car.brand]?.name?.toLowerCase().includes(brandCI)) &&
+
+    (!debouncedCategoryFilter.value ||
+      categoryById.value[car.category]?.name?.toLowerCase().includes(categoryCI)) &&
+
+    (!dealerFilter.value || car.dealer == dealerFilter.value)
   )
+})
+
+const totalPages = computed(() => {
+  return Math.ceil(carsFiltered.value.length / itemsPerPage.value) || 1
+})
+
+const paginatedCars = computed(() => {
+  const start = (currentPage.value - 1) * itemsPerPage.value
+  const end = start + itemsPerPage.value
+
+  return carsFiltered.value.slice(start, end)
+})
+
+const brandChart = computed(() => {
+  return brands.value.map(brand => ({
+    name: brand.name,
+    count: cars.value.filter(car => car.brand === brand.id).length
+  }))
+})
+
+const categoryChart = computed(() => {
+  return categories.value.map(category => ({
+    name: category.name,
+    count: cars.value.filter(car => car.category === category.id).length
+  }))
+})
+
+const dealerChart = computed(() => {
+  return dealers.value.map(dealer => ({
+    name: dealer.name,
+    count: cars.value.filter(car => car.dealer === dealer.id).length
+  }))
 })
 
 async function fetchCars() {
@@ -85,40 +173,57 @@ async function fetchStats() {
   stats.value = r.data
 }
 
-async function onCarAdd() {
-  const formData = new FormData()
-
-  if (carsPictureRef.value?.files[0]) {
-    formData.append("picture", carsPictureRef.value.files[0])
-  }
-
-  formData.append("model", carToAdd.value.model)
-  formData.append("brand", carToAdd.value.brand)
-  formData.append("category", carToAdd.value.category)
-  formData.append("dealer", carToAdd.value.dealer)
-  formData.append("year", carToAdd.value.year)
-
-  await axios.post("/api/cars/", formData, {
-    headers: { "Content-Type": "multipart/form-data" }
-  })
-
-  carToAdd.value = {
-    model: "",
-    brand: null,
-    category: null,
-    dealer: null,
-    year: null
-  }
-
-  carAddImageUrl.value = null
+async function refreshData() {
   await fetchCars()
   await fetchStats()
 }
 
-async function onRemoveClick(car) {
-  await axios.delete(`/api/cars/${car.id}/`)
-  await fetchCars()
-  await fetchStats()
+async function onCarAdd() {
+  try {
+    const formData = new FormData()
+
+    if (carsPictureRef.value?.files?.[0]) {
+      formData.append("picture", carsPictureRef.value.files[0])
+    }
+
+    formData.append("model", carToAdd.value.model)
+    formData.append("brand", carToAdd.value.brand)
+    formData.append("category", carToAdd.value.category)
+    formData.append("dealer", carToAdd.value.dealer)
+    formData.append("year", carToAdd.value.year)
+
+    await axios.post("/api/cars/", formData, {
+      headers: {
+        "Content-Type": "multipart/form-data"
+      }
+    })
+
+    carToAdd.value = {
+      model: "",
+      brand: null,
+      category: null,
+      dealer: null,
+      year: null
+    }
+
+    carsPictureRef.value = null
+    carAddImageUrl.value = ""
+
+    await refreshData()
+
+    notify("Car added successfully")
+  } catch (error) {
+    notify("Could not add car", "error")
+  }
+}
+
+function onImageChange(event) {
+  const fileInput = event.target
+  carsPictureRef.value = fileInput
+
+  if (fileInput.files?.[0]) {
+    carAddImageUrl.value = URL.createObjectURL(fileInput.files[0])
+  }
 }
 
 function onCarEditClick(car) {
@@ -126,22 +231,71 @@ function onCarEditClick(car) {
 }
 
 async function onUpdateCar() {
-  await axios.put(`/api/cars/${carToEdit.value.id}/`, { ...carToEdit.value })
-  carToEdit.value = {}
-  await fetchCars()
+  try {
+    await axios.put(`/api/cars/${carToEdit.value.id}/`, {
+      ...carToEdit.value
+    })
+
+    await fetchCars()
+
+    notify("Car updated successfully")
+  } catch (error) {
+    notify("Could not update car", "error")
+  }
+}
+
+async function onRemoveClick(car) {
+  const confirmed = confirm(`Delete ${car.model}?`)
+
+  if (!confirmed) return
+
+  try {
+    await axios.delete(`/api/cars/${car.id}/`)
+    await refreshData()
+
+    notify("Car deleted successfully")
+  } catch (error) {
+    notify("Could not delete car", "error")
+  }
 }
 
 async function onPurchaseClick(car) {
-  await axios.post("/api/customers/bind-car/", { car_id: car.id })
-  alert("Car purchased successfully")
-}
+  try {
+    await axios.post("/api/customers/bind-car/", {
+      car_id: car.id
+    })
 
-function carsAddPictureChange() {
-  carAddImageUrl.value = URL.createObjectURL(carsPictureRef.value.files[0])
+    notify("Car purchased successfully")
+  } catch (error) {
+    notify("Could not purchase car", "error")
+  }
 }
 
 function onExportExcel() {
-  window.open("http://127.0.0.1:8000/api/cars/export_excel/")
+  window.open("http://localhost:8000/api/cars/export_excel/")
+}
+
+function clearFilters() {
+  modelFilter.value = ""
+  brandFilter.value = ""
+  categoryFilter.value = ""
+  dealerFilter.value = 0
+  debouncedModelFilter.value = ""
+  debouncedBrandFilter.value = ""
+  debouncedCategoryFilter.value = ""
+  currentPage.value = 1
+}
+
+function nextPage() {
+  if (currentPage.value < totalPages.value) {
+    currentPage.value++
+  }
+}
+
+function previousPage() {
+  if (currentPage.value > 1) {
+    currentPage.value--
+  }
 }
 
 onBeforeMount(async () => {
@@ -157,349 +311,174 @@ onBeforeMount(async () => {
 </script>
 
 <template>
-  <div class="dashboard-page">
+  <section class="cars-page">
+    <NotificationToast
+      :show="notification.show"
+      :message="notification.message"
+      :type="notification.type"
+    />
+
     <div class="page-header">
       <div>
-        <h1>🚗 Car Dashboard</h1>
-        <p>Manage your dealership cars, brands, categories, and dealers.</p>
+        <span class="eyebrow">Dashboard</span>
+        <h1>Car Inventory</h1>
+        <p>
+          Manage cars, brands, categories, dealers, images, exports, and customer purchases.
+        </p>
       </div>
 
-      <button class="export-btn" @click="onExportExcel" type="button">
+      <button class="export-btn" @click="onExportExcel">
         Export Excel
       </button>
     </div>
 
-    <div class="stats-grid">
-      <div class="stat-card">
-        <span>🚗</span>
-        <div>
-          <h3>{{ stats?.count || 0 }}</h3>
-          <p>Total Cars</p>
-        </div>
-      </div>
+    <DashboardStats
+      :total-cars="stats?.count || 0"
+      :brands="brands.length"
+      :categories="categories.length"
+      :dealers="dealers.length"
+    />
 
-      <div class="stat-card">
-        <span>🏷️</span>
-        <div>
-          <h3>{{ brands.length }}</h3>
-          <p>Brands</p>
-        </div>
-      </div>
+    <DashboardCharts
+      :brand-data="brandChart"
+      :category-data="categoryChart"
+      :dealer-data="dealerChart"
+    />
 
-      <div class="stat-card">
-        <span>📂</span>
-        <div>
-          <h3>{{ categories.length }}</h3>
-          <p>Categories</p>
-        </div>
-      </div>
+    <AddCarForm
+      :role="userStore.user?.role"
+      :car="carToAdd"
+      :brands="brands"
+      :categories="categories"
+      :dealers="dealers"
+      :image-preview="carAddImageUrl"
+      @add="onCarAdd"
+      @image-change="onImageChange"
+      @update:model="carToAdd.model = $event"
+      @update:year="carToAdd.year = $event"
+      @update:brand="carToAdd.brand = $event"
+      @update:category="carToAdd.category = $event"
+      @update:dealer="carToAdd.dealer = $event"
+    />
 
-      <div class="stat-card">
-        <span>🏢</span>
-        <div>
-          <h3>{{ dealers.length }}</h3>
-          <p>Dealers</p>
-        </div>
-      </div>
+    <SearchFilters
+      v-model:modelFilter="modelFilter"
+      v-model:brandFilter="brandFilter"
+      v-model:categoryFilter="categoryFilter"
+      v-model:dealerFilter="dealerFilter"
+      :dealers="dealers"
+      @clear="clearFilters"
+    />
+
+    <div class="results-header">
+      <h2>Available Cars</h2>
+      <p>
+        Showing {{ paginatedCars.length }} of {{ carsFiltered.length }} cars
+      </p>
     </div>
 
-    <form
-      v-if="userStore.user?.role === 'admin'"
-      class="add-card"
-      @submit.prevent.stop="onCarAdd"
-      novalidate
-    >
-      <h2>Add New Car</h2>
-
-      <div class="add-grid">
-        <input class="form-control" v-model="carToAdd.model" placeholder="Car model" />
-        <input class="form-control" type="number" v-model="carToAdd.year" placeholder="Year" />
-
-        <select class="form-select" v-model.number="carToAdd.brand">
-          <option :value="null">Select Brand</option>
-          <option v-for="b in brands" :key="b.id" :value="b.id">
-            {{ b.name }}
-          </option>
-        </select>
-
-        <select class="form-select" v-model.number="carToAdd.category">
-          <option :value="null">Select Category</option>
-          <option v-for="c in categories" :key="c.id" :value="c.id">
-            {{ c.name }}
-          </option>
-        </select>
-
-        <select class="form-select" v-model.number="carToAdd.dealer">
-          <option :value="null">Select Dealer</option>
-          <option v-for="d in dealers" :key="d.id" :value="d.id">
-            {{ d.name }}
-          </option>
-        </select>
-
-        <input
-          class="form-control"
-          type="file"
-          ref="carsPictureRef"
-          @change="carsAddPictureChange"
-        />
-
-        <button class="primary-btn">Add Car</button>
-      </div>
-
-      <img v-if="carAddImageUrl" :src="carAddImageUrl" class="preview-img" />
-    </form>
-
-    <div class="filter-card">
-      <h2>Search & Filter</h2>
-
-      <div class="filter-grid">
-        <input class="form-control" v-model="modelFilter" placeholder="Search by model" />
-        <input class="form-control" v-model="brandFilter" placeholder="Search by brand" />
-        <input class="form-control" v-model="categoryFilter" placeholder="Search by category" />
-
-        <select class="form-select" v-model="dealerFilter">
-          <option :value="0">All Dealers</option>
-          <option v-for="d in dealers" :key="d.id" :value="d.id">
-            {{ d.name }}
-          </option>
-        </select>
-      </div>
+    <div v-if="paginatedCars.length" class="cars-grid">
+      <CarCard
+        v-for="car in paginatedCars"
+        :key="car.id"
+        :car="car"
+        :brand="brandById[car.brand]?.name"
+        :category="categoryById[car.category]?.name"
+        :dealer="dealerById[car.dealer]?.name"
+        :role="userStore.user?.role"
+        @edit="onCarEditClick"
+        @delete="onRemoveClick"
+        @purchase="onPurchaseClick"
+      />
     </div>
 
-    <div class="cars-grid">
-      <div v-for="item in carsFiltered" :key="item.id" class="car-card">
-        <div class="car-images">
-          <img v-if="item.picture" :src="item.picture" />
-
-          <img
-            v-for="img in item.images"
-            :key="img.id"
-            :src="img.image"
-          />
-
-          <div v-if="!item.picture && (!item.images || item.images.length === 0)" class="no-image">
-            🚗
-          </div>
-        </div>
-
-        <div class="car-info">
-          <h3>{{ item.model }}</h3>
-
-          <p>
-            <strong>Brand:</strong>
-            {{ brandById[item.brand]?.name || "N/A" }}
-          </p>
-
-          <p>
-            <strong>Category:</strong>
-            {{ categoryById[item.category]?.name || "N/A" }}
-          </p>
-
-          <p>
-            <strong>Dealer:</strong>
-            {{ dealerById[item.dealer]?.name || "N/A" }}
-          </p>
-
-          <p>
-            <strong>Year:</strong>
-            {{ item.year || "N/A" }}
-          </p>
-        </div>
-
-        <div class="card-actions">
-          <button
-            v-if="userStore.user?.role === 'customer'"
-            class="primary-btn"
-            @click="onPurchaseClick(item)"
-          >
-            Purchase
-          </button>
-
-          <template v-if="userStore.user?.role === 'admin'">
-            <button
-              class="edit-btn"
-              @click="onCarEditClick(item)"
-              data-bs-toggle="modal"
-              data-bs-target="#editCarModal"
-            >
-              Edit
-            </button>
-
-            <button class="delete-btn" @click="onRemoveClick(item)">
-              Delete
-            </button>
-          </template>
-        </div>
-      </div>
+    <div v-else class="empty-state">
+      <div>🚗</div>
+      <h3>No cars found</h3>
+      <p>Try changing your search filters or add a new car.</p>
     </div>
 
-    <div
-      v-if="userStore.user?.role === 'admin'"
-      class="modal fade"
-      id="editCarModal"
-      tabindex="-1"
-    >
-      <div class="modal-dialog">
-        <div class="modal-content rounded-4">
-          <div class="modal-header">
-            <h5 class="modal-title">Edit Car</h5>
-            <button class="btn-close" data-bs-dismiss="modal"></button>
-          </div>
+    <PaginationControls
+      :current-page="currentPage"
+      :total-pages="totalPages"
+      @previous="previousPage"
+      @next="nextPage"
+    />
 
-          <div class="modal-body">
-            <div class="form-floating mb-3">
-              <input class="form-control" v-model="carToEdit.model" placeholder="Model" />
-              <label>Model</label>
-            </div>
-
-            <div class="form-floating">
-              <input type="number" class="form-control" v-model="carToEdit.year" placeholder="Year" />
-              <label>Year</label>
-            </div>
-          </div>
-
-          <div class="modal-footer">
-            <button class="btn btn-secondary" data-bs-dismiss="modal">
-              Close
-            </button>
-
-            <button
-              class="btn btn-primary"
-              data-bs-dismiss="modal"
-              @click="onUpdateCar"
-            >
-              Save Changes
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+    <EditCarModal
+      :car="carToEdit"
+      @save="onUpdateCar"
+      @update:model="carToEdit.model = $event"
+      @update:year="carToEdit.year = $event"
+    />
+  </section>
 </template>
 
 <style scoped>
-.dashboard-page {
-  padding: 32px;
-  background: #f8fafc;
+.cars-page {
   min-height: 100vh;
+  padding-bottom: 40px;
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
-  gap: 20px;
+  gap: 22px;
   align-items: center;
   margin-bottom: 24px;
 }
 
+.eyebrow {
+  color: #2563eb;
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
 .page-header h1 {
-  font-size: 32px;
-  font-weight: 800;
+  margin: 6px 0;
+  font-size: 38px;
+  font-weight: 950;
   color: #0f172a;
-  margin: 0;
 }
 
 .page-header p {
   color: #64748b;
-  margin: 6px 0 0;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 18px;
-  margin-bottom: 24px;
-}
-
-.stat-card {
-  background: white;
-  padding: 22px;
-  border-radius: 18px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-}
-
-.stat-card span {
-  font-size: 30px;
-  background: #eff6ff;
-  padding: 14px;
-  border-radius: 14px;
-}
-
-.stat-card h3 {
+  max-width: 680px;
   margin: 0;
-  font-size: 26px;
-  font-weight: 800;
-  color: #0f172a;
+  font-weight: 600;
 }
 
-.stat-card p {
-  margin: 4px 0 0;
-  color: #64748b;
-}
-
-.add-card,
-.filter-card {
-  background: white;
-  padding: 24px;
-  border-radius: 18px;
-  margin-bottom: 24px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-}
-
-.add-card h2,
-.filter-card h2 {
-  font-size: 20px;
-  font-weight: 800;
-  margin-bottom: 18px;
-  color: #0f172a;
-}
-
-.add-grid,
-.filter-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-}
-
-.primary-btn,
-.export-btn,
-.edit-btn,
-.delete-btn {
-  border: none;
-  border-radius: 12px;
-  padding: 12px 18px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.primary-btn,
 .export-btn {
+  border: none;
   background: #2563eb;
   color: white;
+  padding: 13px 18px;
+  border-radius: 14px;
+  font-weight: 900;
+  box-shadow: 0 12px 30px rgba(37, 99, 235, 0.25);
 }
 
-.primary-btn:hover,
-.export-btn:hover {
-  background: #1d4ed8;
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 18px;
+  margin-bottom: 18px;
 }
 
-.edit-btn {
-  background: #16a34a;
-  color: white;
+.results-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 950;
+  color: #0f172a;
 }
 
-.delete-btn {
-  background: #dc2626;
-  color: white;
-}
-
-.preview-img {
-  margin-top: 16px;
-  max-height: 90px;
-  border-radius: 12px;
+.results-header p {
+  margin: 0;
+  color: #64748b;
+  font-weight: 700;
 }
 
 .cars-grid {
@@ -508,88 +487,67 @@ onBeforeMount(async () => {
   gap: 22px;
 }
 
-.car-card {
+.empty-state {
   background: white;
-  border-radius: 20px;
-  overflow: hidden;
-  box-shadow: 0 12px 35px rgba(15, 23, 42, 0.1);
-  transition: 0.2s;
+  border-radius: 24px;
+  padding: 50px;
+  text-align: center;
+  box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
 }
 
-.car-card:hover {
-  transform: translateY(-4px);
+.empty-state div {
+  font-size: 52px;
 }
 
-.car-images {
-  height: 190px;
-  background: #e2e8f0;
-  display: flex;
-  gap: 6px;
-  overflow: hidden;
-}
-
-.car-images img {
-  width: 100%;
-  object-fit: cover;
-}
-
-.no-image {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 54px;
-}
-
-.car-info {
-  padding: 20px;
-}
-
-.car-info h3 {
-  font-size: 20px;
-  font-weight: 800;
+.empty-state h3 {
+  font-size: 24px;
+  font-weight: 900;
   color: #0f172a;
-  margin-bottom: 14px;
+  margin: 12px 0 6px;
 }
 
-.car-info p {
-  margin: 7px 0;
-  color: #475569;
+.empty-state p {
+  color: #64748b;
+  margin: 0;
 }
 
-.card-actions {
-  padding: 0 20px 20px;
-  display: flex;
-  gap: 10px;
+:global(.dark-mode) .page-header h1,
+:global(.dark-mode) .results-header h2,
+:global(.dark-mode) .empty-state h3 {
+  color: #e5e7eb;
 }
 
-@media (max-width: 1100px) {
-  .stats-grid,
+:global(.dark-mode) .empty-state {
+  background: #0f172a;
+}
+
+@media (max-width: 1050px) {
   .cars-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .add-grid,
-  .filter-grid {
-    grid-template-columns: repeat(2, 1fr);
+  .page-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
 @media (max-width: 700px) {
-  .dashboard-page {
-    padding: 18px;
+  .cars-grid {
+    grid-template-columns: 1fr;
   }
 
-  .page-header {
+  .page-header h1 {
+    font-size: 30px;
+  }
+
+  .results-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .stats-grid,
-  .cars-grid,
-  .add-grid,
-  .filter-grid {
-    grid-template-columns: 1fr;
+  .export-btn {
+    width: 100%;
   }
 }
 </style>

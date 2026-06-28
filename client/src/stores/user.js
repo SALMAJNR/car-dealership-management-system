@@ -1,11 +1,12 @@
- import { defineStore } from "pinia"
+import { defineStore } from "pinia"
 import axios from "axios"
 
 export const useUserStore = defineStore("user", {
   state: () => ({
     user: null,
     isAuthenticated: false,
-    role: null
+    role: null,
+    checked: false
   }),
 
   actions: {
@@ -22,6 +23,8 @@ export const useUserStore = defineStore("user", {
         this.user = null
         this.isAuthenticated = false
         this.role = null
+      } finally {
+        this.checked = true
       }
     },
 
@@ -36,6 +39,7 @@ export const useUserStore = defineStore("user", {
         this.user = r.data.user
         this.isAuthenticated = true
         this.role = r.data.user.role
+        this.checked = true
       }
     },
 
@@ -49,6 +53,7 @@ export const useUserStore = defineStore("user", {
       this.user = null
       this.isAuthenticated = false
       this.role = null
+      this.checked = true
     }
   }
 })

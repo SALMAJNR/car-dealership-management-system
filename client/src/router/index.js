@@ -23,11 +23,19 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const userStore = useUserStore()
+
+  if (!userStore.checked) {
+    await userStore.fetchMy()
+  }
 
   if (to.path !== "/login" && !userStore.isAuthenticated) {
     return "/login"
+  }
+
+  if (to.path === "/login" && userStore.isAuthenticated) {
+    return "/"
   }
 })
 
