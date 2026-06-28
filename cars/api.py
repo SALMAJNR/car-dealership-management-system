@@ -9,14 +9,7 @@ from django.http import HttpResponse
 
 from openpyxl import Workbook
 
-from cars.models import (
-    Car,
-    Brand,
-    Category,
-    Dealer,
-    Customer,
-    CarImage
-)
+from cars.models import Car, Brand, Category, Dealer, Customer, CarImage
 
 from cars.serializers import (
     CarSerializer,
@@ -37,15 +30,10 @@ class StatsSerializer(serializers.Serializer):
 
 class UserProfileViewSet(GenericViewSet):
 
-    @action(methods=['GET'], detail=False, url_path='my')
+    @action(methods=["GET"], detail=False, url_path="my")
     def my(self, request):
-
         if request.user.is_authenticated:
-
-            role = "customer"
-
-            if request.user.is_superuser:
-                role = "admin"
+            role = "admin" if request.user.is_superuser else "customer"
 
             return Response({
                 "id": request.user.id,
@@ -55,9 +43,8 @@ class UserProfileViewSet(GenericViewSet):
 
         return Response({}, status=401)
 
-    @action(methods=['POST'], detail=False, url_path='login')
+    @action(methods=["POST"], detail=False, url_path="login")
     def login(self, request):
-
         user = authenticate(
             username=request.data.get("username"),
             password=request.data.get("password")
@@ -66,17 +53,24 @@ class UserProfileViewSet(GenericViewSet):
         if user:
             login(request, user)
 
+            role = "admin" if user.is_superuser else "customer"
+
             return Response({
-                "success": True
+                "success": True,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "role": role,
+                }
             })
 
         return Response({
+            "success": False,
             "error": "Invalid credentials"
         }, status=400)
 
-    @action(methods=['POST'], detail=False, url_path='logout')
+    @action(methods=["POST"], detail=False, url_path="logout")
     def logout(self, request):
-
         logout(request)
 
         return Response({
@@ -92,13 +86,11 @@ class CarViewSet(
     mixins.DestroyModelMixin,
     GenericViewSet
 ):
-
     queryset = Car.objects.all().order_by("-id")
     serializer_class = CarSerializer
 
     @action(detail=False, methods=["GET"], url_path="stats")
     def stats(self, request):
-
         stats = Car.objects.aggregate(
             count=Count("*"),
             avg=Avg("id"),
@@ -107,18 +99,11 @@ class CarViewSet(
         )
 
         serializer = StatsSerializer(instance=stats)
-
         return Response(serializer.data)
 
-    @action(
-        detail=False,
-        methods=["GET"],
-        url_path="export_excel"
-    )
+    @action(detail=False, methods=["GET"], url_path="export_excel")
     def export_excel(self, request):
-
         workbook = Workbook()
-
         worksheet = workbook.active
         worksheet.title = "Cars"
 
@@ -131,7 +116,6 @@ class CarViewSet(
         ])
 
         for car in Car.objects.all():
-
             worksheet.append([
                 car.model,
                 car.brand.name if car.brand else "",
@@ -141,14 +125,10 @@ class CarViewSet(
             ])
 
         response = HttpResponse(
-            content_type=(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        response["Content-Disposition"] = (
-            'attachment; filename="cars.xlsx"'
-        )
+        response["Content-Disposition"] = 'attachment; filename="cars.xlsx"'
 
         workbook.save(response)
 
@@ -163,7 +143,6 @@ class BrandViewSet(
     mixins.DestroyModelMixin,
     GenericViewSet
 ):
-
     queryset = Brand.objects.all()
     serializer_class = BrandSerializer
 
@@ -176,7 +155,6 @@ class CategoryViewSet(
     mixins.DestroyModelMixin,
     GenericViewSet
 ):
-
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
 
@@ -189,7 +167,6 @@ class DealerViewSet(
     mixins.DestroyModelMixin,
     GenericViewSet
 ):
-
     queryset = Dealer.objects.all()
     serializer_class = DealerSerializer
 
@@ -202,12 +179,10 @@ class CustomerViewSet(
     mixins.DestroyModelMixin,
     GenericViewSet
 ):
-
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
 
     def get_queryset(self):
-
         qs = super().get_queryset()
 
         if not self.request.user.is_authenticated:
@@ -219,19 +194,13 @@ class CustomerViewSet(
         return qs.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-
         serializer.save(user=self.request.user)
 
-    @action(
-        detail=False,
-        methods=["POST"],
-        url_path="bind-car"
-    )
+    @action(detail=False, methods=["POST"], url_path="bind-car")
     def bind_car(self, request):
-
         car_id = request.data.get("car_id")
 
-        customer, created = Customer.objects.create(
+        Customer.objects.create(
             user=request.user,
             purchased_car_id=car_id
         )
@@ -246,13 +215,11 @@ class CarImageViewSet(
     mixins.ListModelMixin,
     GenericViewSet
 ):
-
     queryset = CarImage.objects.all()
     serializer_class = CarImageSerializer
 
     @action(detail=False, methods=["GET"], url_path="stats")
     def stats(self, request):
-
         stats = CarImage.objects.aggregate(
             count=Count("*"),
             avg=Avg("id"),
@@ -261,5 +228,4 @@ class CarImageViewSet(
         )
 
         serializer = StatsSerializer(instance=stats)
-
         return Response(serializer.data)
